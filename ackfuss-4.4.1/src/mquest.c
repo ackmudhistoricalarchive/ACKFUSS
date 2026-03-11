@@ -169,7 +169,7 @@ DO_FUN(do_mquest)
    cost = one_argument(cost,m_name);
    if( m_name[0] == '\0' )
     break; 
-   if( m_number > 0 )
+   if( atoi(m_number) > 0 )
     snprintf(mbuf,MSL,"%s %s",m_number,m_name);
   }
   ch->exp -= pexp;
