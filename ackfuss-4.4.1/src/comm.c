@@ -178,6 +178,158 @@ char dr[MAX_STRING_LENGTH];
 
 int global_port;
 
+static const char *WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+
+static void sha1_digest( const unsigned char *msg, size_t len, unsigned char out[20] )
+{
+   unsigned int h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
+   unsigned long long bit_len = (unsigned long long)len * 8ULL;
+   size_t new_len = len + 1;
+   while( ( new_len % 64 ) != 56 )
+      ++new_len;
+
+   unsigned char *buf = (unsigned char *)getmem( new_len + 8 );
+   memcpy( buf, msg, len );
+   buf[len] = 0x80;
+   memset( buf + len + 1, 0, new_len - len - 1 );
+   for( int i = 0; i < 8; ++i )
+      buf[new_len + i] = (unsigned char)( ( bit_len >> ( 56 - ( i * 8 ) ) ) & 0xFF );
+
+   for( size_t off = 0; off < new_len + 8; off += 64 )
+   {
+      unsigned int w[80];
+      for( int i = 0; i < 16; ++i )
+      {
+         size_t j = off + ( i * 4 );
+         w[i] = ( (unsigned int)buf[j] << 24 ) | ( (unsigned int)buf[j + 1] << 16 ) | ( (unsigned int)buf[j + 2] << 8 ) | (unsigned int)buf[j + 3];
+      }
+      for( int i = 16; i < 80; ++i )
+      {
+         unsigned int v = w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16];
+         w[i] = ( v << 1 ) | ( v >> 31 );
+      }
+
+      unsigned int a = h0, b = h1, c = h2, d = h3, e = h4;
+      for( int i = 0; i < 80; ++i )
+      {
+         unsigned int f, k;
+         if( i < 20 )
+         {
+            f = ( b & c ) | ( (~b) & d );
+            k = 0x5A827999;
+         }
+         else if( i < 40 )
+         {
+            f = b ^ c ^ d;
+            k = 0x6ED9EBA1;
+         }
+         else if( i < 60 )
+         {
+            f = ( b & c ) | ( b & d ) | ( c & d );
+            k = 0x8F1BBCDC;
+         }
+         else
+         {
+            f = b ^ c ^ d;
+            k = 0xCA62C1D6;
+         }
+
+         unsigned int temp = ( ( a << 5 ) | ( a >> 27 ) ) + f + e + k + w[i];
+         e = d;
+         d = c;
+         c = ( b << 30 ) | ( b >> 2 );
+         b = a;
+         a = temp;
+      }
+
+      h0 += a; h1 += b; h2 += c; h3 += d; h4 += e;
+   }
+
+   char *freebuf = (char *)buf;
+   dispose( freebuf, new_len + 8 );
+   unsigned int h[5] = { h0, h1, h2, h3, h4 };
+   for( int i = 0; i < 5; ++i )
+   {
+      out[( i * 4 )] = (unsigned char)( ( h[i] >> 24 ) & 0xFF );
+      out[( i * 4 ) + 1] = (unsigned char)( ( h[i] >> 16 ) & 0xFF );
+      out[( i * 4 ) + 2] = (unsigned char)( ( h[i] >> 8 ) & 0xFF );
+      out[( i * 4 ) + 3] = (unsigned char)( h[i] & 0xFF );
+   }
+}
+
+static void base64_encode( const unsigned char *src, size_t len, char *out, size_t outlen )
+{
+   static const char *tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+   size_t i = 0, j = 0;
+
+   while( i + 2 < len && ( j + 4 ) < outlen )
+   {
+      unsigned int n = ( (unsigned int)src[i] << 16 ) | ( (unsigned int)src[i + 1] << 8 ) | src[i + 2];
+      out[j++] = tbl[( n >> 18 ) & 63];
+      out[j++] = tbl[( n >> 12 ) & 63];
+      out[j++] = tbl[( n >> 6 ) & 63];
+      out[j++] = tbl[n & 63];
+      i += 3;
+   }
+
+   if( i < len && ( j + 4 ) < outlen )
+   {
+      unsigned int n = (unsigned int)src[i] << 16;
+      out[j++] = tbl[( n >> 18 ) & 63];
+      if( i + 1 < len )
+      {
+         n |= (unsigned int)src[i + 1] << 8;
+         out[j++] = tbl[( n >> 12 ) & 63];
+         out[j++] = tbl[( n >> 6 ) & 63];
+         out[j++] = '=';
+      }
+      else
+      {
+         out[j++] = tbl[( n >> 12 ) & 63];
+         out[j++] = '=';
+         out[j++] = '=';
+      }
+   }
+
+   out[j] = '\0';
+}
+
+static void queue_login_greeting( DESCRIPTOR_DATA *d )
+{
+   char buf[MSL];
+   FILE *fp;
+
+   if( !d->websocket )
+      send_telopts( d );
+
+   if( d->greeting_sent )
+      return;
+   d->greeting_sent = TRUE;
+
+   snprintf( buf, MSL, "%s/g/greeting%d.%s", HELP_DIR, number_range(0,MAX_GREETING), HELP_MORT );
+   if( (fp = file_open(buf,"r")) != NULL )
+   {
+      while( fgets(buf,MAX_STRING_LENGTH,fp) )
+         write_to_buffer(d,buf);
+      file_close(fp);
+   }
+   else
+      write_to_buffer(d,"Please enter your name:");
+}
+
+static char *strcasestr_local( const char *haystack, const char *needle )
+{
+   size_t nlen = strlen( needle );
+   if( nlen == 0 )
+      return (char *)haystack;
+
+   for( const char *h = haystack; *h; ++h )
+      if( tolower( (unsigned char)*h ) == tolower( (unsigned char)*needle ) && strncasecmp( h, needle, nlen ) == 0 )
+         return (char *)h;
+   return NULL;
+}
+
+
 int main( int argc, char **argv )
 {
    struct timeval now_time;
@@ -719,23 +871,15 @@ void new_descriptor( int d_control )
     */
    dnew->timeout = current_time + 180;
 
-   /*
-    * Send the greeting.
-    */
    {
-      FILE *fp;
-
-      send_telopts(dnew);
-
-      snprintf( buf, MSL, "%s/g/greeting%d.%s", HELP_DIR, number_range(0,MAX_GREETING), HELP_MORT );
-
-      if( (fp = file_open(buf,"r")) != NULL )
-       while( fgets(buf,MAX_STRING_LENGTH,fp) )
-        write_to_buffer(dnew,buf);
-      else
-       snprintf(buf,MSL,"Please enter your name:");
-
-      file_close(fp);
+      char peek[8];
+      int got = recv( desc, peek, sizeof( peek ) - 1, MSG_PEEK );
+      bool likely_ws = ( got >= 3 && !strncasecmp( peek, "GET", 3 ) );
+      if( !likely_ws )
+      {
+         dnew->protocol_checked = TRUE;
+         queue_login_greeting( dnew );
+      }
    }
 
    cur_players++;
@@ -757,6 +901,11 @@ void init_descriptor( DESCRIPTOR_DATA * dnew, int desc )
    dnew->outbuf = (char *)getmem( dnew->outsize );
    dnew->flags = 0;
    dnew->childpid = 0;
+   dnew->connected_at = current_time;
+   dnew->websocket = FALSE;
+   dnew->protocol_checked = FALSE;
+   dnew->greeting_sent = FALSE;
+   dnew->ws_inlen = 0;
 
 }
 
@@ -834,15 +983,9 @@ bool read_from_descriptor( DESCRIPTOR_DATA * d )
 {
    int iStart;
 
-   /*
-    * Hold horses if pending command already. 
-    */
    if( d->incomm[0] != '\0' )
       return TRUE;
 
-   /*
-    * Check for overflow. 
-    */
    iStart = strlen( d->inbuf );
    if( iStart >= (int)sizeof( d->inbuf ) - 10 )
    {
@@ -854,19 +997,166 @@ bool read_from_descriptor( DESCRIPTOR_DATA * d )
       return FALSE;
    }
 
-   /*
-    * Snarf input. 
-    */
    for( ;; )
    {
       char tmp[MSL];
       int nRead;
 
-      nRead = read( d->descriptor, tmp, sizeof( tmp ) - 10 - iStart );
+      nRead = read( d->descriptor, tmp, sizeof( tmp ) - 1 );
       if( nRead > 0 )
       {
-         iStart += telopt_handler(d,tmp,nRead,(d->inbuf + iStart));
-         if( d->inbuf[iStart - 1] == '\n' || d->inbuf[iStart - 1] == '\r' )
+         if( d->websocket )
+         {
+            if( d->ws_inlen + nRead >= sizeof( d->ws_inbuf ) )
+               return FALSE;
+            memcpy( d->ws_inbuf + d->ws_inlen, tmp, nRead );
+            d->ws_inlen += nRead;
+
+            size_t used = 0;
+            while( d->ws_inlen - used >= 2 )
+            {
+               unsigned char *frame = (unsigned char *)( d->ws_inbuf + used );
+               bool fin = ( frame[0] & 0x80 ) != 0;
+               unsigned int opcode = frame[0] & 0x0F;
+               size_t hdr = 2;
+               unsigned long long payload_len = frame[1] & 0x7F;
+               bool masked = ( frame[1] & 0x80 ) != 0;
+
+               if( payload_len == 126 )
+               {
+                  if( d->ws_inlen - used < 4 )
+                     break;
+                  payload_len = ( (unsigned long long)frame[2] << 8 ) | frame[3];
+                  hdr = 4;
+               }
+               else if( payload_len == 127 )
+               {
+                  if( d->ws_inlen - used < 10 )
+                     break;
+                  payload_len = 0;
+                  for( int i = 0; i < 8; ++i )
+                     payload_len = ( payload_len << 8 ) | frame[2 + i];
+                  hdr = 10;
+               }
+
+               if( !masked )
+                  return FALSE;
+               if( d->ws_inlen - used < hdr + 4 + payload_len )
+                  break;
+
+               unsigned char *mask = frame + hdr;
+               unsigned char *payload = frame + hdr + 4;
+               for( unsigned long long i = 0; i < payload_len; ++i )
+                  payload[i] ^= mask[i % 4];
+
+               if( opcode == 0x8 )
+                  return FALSE;
+               if( opcode == 0x9 )
+               {
+                  char pong[10 + MSL];
+                  size_t out = 0;
+                  pong[out++] = 0x8A;
+                  if( payload_len < 126 )
+                     pong[out++] = (unsigned char)payload_len;
+                  else
+                     continue;
+                  memcpy( pong + out, payload, payload_len );
+                  out += payload_len;
+                  send( d->descriptor, pong, out, 0 );
+               }
+               else if( opcode == 0x1 )
+               {
+                  if( !fin )
+                     return FALSE;
+                  for( unsigned long long i = 0; i < payload_len && iStart < (int)sizeof( d->inbuf ) - 2; ++i )
+                     d->inbuf[iStart++] = payload[i];
+                  d->inbuf[iStart++] = '\n';
+               }
+               used += hdr + 4 + payload_len;
+            }
+
+            if( used > 0 )
+            {
+               if( used < d->ws_inlen )
+                  memmove( d->ws_inbuf, d->ws_inbuf + used, d->ws_inlen - used );
+               d->ws_inlen -= used;
+            }
+         }
+         else if( !d->protocol_checked )
+         {
+            if( d->ws_inlen + nRead >= sizeof( d->ws_inbuf ) )
+               d->protocol_checked = TRUE;
+            else
+            {
+               memcpy( d->ws_inbuf + d->ws_inlen, tmp, nRead );
+               d->ws_inlen += nRead;
+
+               char *end = NULL;
+               for( unsigned int i = 3; i < d->ws_inlen; ++i )
+                  if( d->ws_inbuf[i-3] == '\r' && d->ws_inbuf[i-2] == '\n' && d->ws_inbuf[i-1] == '\r' && d->ws_inbuf[i] == '\n' )
+                  {
+                     end = d->ws_inbuf + i + 1;
+                     break;
+                  }
+
+               if( end && !strncasecmp( d->ws_inbuf, "GET ", 4 ) && strcasestr_local( d->ws_inbuf, "Upgrade: websocket" ) )
+               {
+                  char *k = strcasestr_local( d->ws_inbuf, "Sec-WebSocket-Key:" );
+                  if( !k )
+                     return FALSE;
+                  k += 18;
+                  while( *k == ' ' || *k == '\t' ) ++k;
+                  char key[256];
+                  int ki = 0;
+                  while( *k && *k != '\r' && *k != '\n' && ki < 255 )
+                     key[ki++] = *k++;
+                  key[ki] = '\0';
+
+                  char src[512];
+                  unsigned char digest[20];
+                  char accept[128];
+                  snprintf( src, sizeof(src), "%s%s", key, WS_GUID );
+                  sha1_digest( (unsigned char *)src, strlen(src), digest );
+                  base64_encode( digest, sizeof(digest), accept, sizeof(accept) );
+
+                  char reply[MSL];
+                  snprintf( reply, sizeof(reply),
+                     "HTTP/1.1 101 Switching Protocols\r\n"
+                     "Upgrade: websocket\r\n"
+                     "Connection: Upgrade\r\n"
+                     "Sec-WebSocket-Accept: %s\r\n\r\n", accept );
+                  send( d->descriptor, reply, strlen(reply), 0 );
+
+                  d->websocket = TRUE;
+                  d->protocol_checked = TRUE;
+                  d->ws_inlen = 0;
+                  d->outtop = 0;
+                  queue_login_greeting( d );
+               }
+               else if( end )
+               {
+                  d->protocol_checked = TRUE;
+               }
+               else
+               {
+                  break;
+               }
+            }
+
+            if( d->protocol_checked && !d->websocket && d->ws_inlen > 0 )
+            {
+               if( !d->greeting_sent )
+                  queue_login_greeting( d );
+               iStart += telopt_handler( d, d->ws_inbuf, d->ws_inlen, ( d->inbuf + iStart ) );
+               d->ws_inlen = 0;
+            }
+         }
+         else
+         {
+            iStart += telopt_handler(d,tmp,nRead,(d->inbuf + iStart));
+         }
+
+         if( iStart > 0 && ( d->inbuf[iStart - 1] == '\n' || d->inbuf[iStart - 1] == '\r' ) )
             break;
       }
       else if( nRead == 0 )
@@ -882,6 +1172,13 @@ bool read_from_descriptor( DESCRIPTOR_DATA * d )
          return FALSE;
       }
    }
+
+   if( !d->protocol_checked && ( current_time - d->connected_at ) >= 1 )
+      d->protocol_checked = TRUE;
+
+   if( d->protocol_checked && !d->websocket && d->outtop == 0 )
+      queue_login_greeting( d );
+
    d->inbuf[iStart] = '\0';
    return TRUE;
 }
@@ -996,6 +1293,15 @@ void read_from_buffer( DESCRIPTOR_DATA * d )
  */
 bool process_output( DESCRIPTOR_DATA * d, bool fPrompt )
 {
+   if( !d->protocol_checked )
+   {
+      if( ( current_time - d->connected_at ) < 1 )
+         return TRUE;
+      d->protocol_checked = TRUE;
+   }
+
+   if( !d->websocket && !d->greeting_sent )
+      queue_login_greeting( d );
 
    /*
     * Bust a prompt.
@@ -1833,9 +2139,38 @@ bool write_to_descriptor( int desc, char *txt, int length )
  int nWrite = 0;
  int nBlock = 0;
  int iErr = 0;
+ DESCRIPTOR_DATA *d = NULL;
 
  if( length <= 0 )
   length = strlen( txt );
+
+ for( d = first_desc; d; d = d->next )
+  if( d->descriptor == desc )
+   break;
+
+ if( d && d->websocket )
+ {
+  unsigned char header[10];
+  size_t hlen = 0;
+  header[hlen++] = 0x81;
+  if( length < 126 )
+   header[hlen++] = (unsigned char)length;
+  else if( length <= 0xFFFF )
+  {
+   header[hlen++] = 126;
+   header[hlen++] = (unsigned char)( ( length >> 8 ) & 0xFF );
+   header[hlen++] = (unsigned char)( length & 0xFF );
+  }
+  else
+  {
+   header[hlen++] = 127;
+   for( int i = 7; i >= 0; --i )
+    header[hlen++] = (unsigned char)( ( (unsigned long long)length >> ( i * 8 ) ) & 0xFF );
+  }
+
+  if( send( desc, header, hlen, 0 ) != (ssize_t)hlen )
+   return false;
+ }
 
  for( iStart = 0; iStart < length; iStart += nWrite )
  {
@@ -1848,12 +2183,6 @@ bool write_to_descriptor( int desc, char *txt, int length )
 
    if( iErr == EWOULDBLOCK )
    {
-    /*
-     * This is a SPAMMY little bug error. I would suggest
-     * not using it, but I've included it in case. -Orion
-     *
-     * perror( "Write_to_descriptor: Send is blocking" );
-     */
     nWrite = 0;
     continue;
    }

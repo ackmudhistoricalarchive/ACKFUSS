@@ -270,6 +270,12 @@ class descriptor_data
    int flags;
    int childpid;  /* Child process id */
    time_t timeout;
+   time_t connected_at;
+   bool websocket;
+   bool protocol_checked;
+   bool greeting_sent;
+   unsigned int ws_inlen;
+   char ws_inbuf[8192];
 };
 
 #define DESC_FLAG_PASSTHROUGH 1  /* Used when data is being passed to another program */
