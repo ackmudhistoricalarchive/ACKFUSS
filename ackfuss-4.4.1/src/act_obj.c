@@ -3447,6 +3447,7 @@ DO_FUN(do_adapt)
    char *coststring;
    char change[MSL], mbuf[MSL];
    change[0] = '\0';
+   mbuf[0] = '\0';
    coststring = take_best_coins(ch->money,cost); /* Gives a string of the coins we need to steal. */
    coststring = one_argument(coststring,change); /* First arg is change, skip it. Rest is what we take. */
    for( short mn = 0; mn < MAX_CURRENCY; mn++ )
@@ -3458,7 +3459,7 @@ DO_FUN(do_adapt)
     coststring = one_argument(coststring,m_name);
     if( m_name[0] == '\0' )
      break;
-    if( m_number > 0 )
+    if( atoi(m_number) > 0 )
      snprintf(mbuf,MSL,"%s %s",m_number,m_name);
    }
    money_to_value(ch,mbuf);

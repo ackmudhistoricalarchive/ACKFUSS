@@ -21,18 +21,21 @@ VERS = AckFUSS 4.4.1
 #-Werror -Wwrite-strings -Wconversion
 W_FLAGS = -Wall -Wformat-security -Wpointer-arith -Wredundant-decls -Wcast-align -Wshadow -Wno-write-strings
 C_FLAGS = -O2 -g $(W_FLAGS) $(PROF) $(CYGWIN)
-L_FLAGS = -lcrypt -lm -lpthread -ldl -L`pwd` -llua
+L_FLAGS = -lcrypt -lm -lpthread -ldl
 
 #IMC2 - Comment out to disable IMC2 support
 IMC = 1
 IMC_FILES = imc.c sha256.c
 
-C_FILES = $(filter-out $(IMC_FILES),$(wildcard *.c))
+C_FILES = $(filter-out $(IMC_FILES) luascript.c,$(wildcard *.c))
 
 ifdef IMC
-   C_FILES = $(wildcard *.c)
+   C_FILES = $(filter-out luascript.c,$(wildcard *.c))
    C_FLAGS := $(C_FLAGS) -DIMC
 endif
+
+# Legacy code relies on permissive C++ conversions (for example '\0' as a null pointer).
+C_FLAGS := $(C_FLAGS) -fpermissive
 
 O_FILES = $(patsubst %.c,o/%.o,$(C_FILES))
 
@@ -75,5 +78,6 @@ clean:
 endif
 
 o/%.o: %.c
+	@mkdir -p o
 	@echo "Compiling `echo $@ | cut -c 3-` ...";
 	@$(CC) -c $(C_FLAGS) $< -o $@
